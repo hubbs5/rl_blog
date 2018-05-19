@@ -2,6 +2,8 @@
 # For details see: 
 # https://www.datahubbs.com/policy-gradients-with-reinforce/
 
+import numpy as np
+
 def reinforce_baseline(env, policy_estimator, value_estimator,
                        num_episodes=2000, batch_size=10, gamma=0.99):
     
