@@ -9,7 +9,7 @@ import numpy as np
 import tensorflow as tf
 from tensorflow.contrib.layers import fully_connected
 
-class policyEstimator(object):
+class actor(object):
     
     def __init__(self, sess, env):
         # Pass TensorFlow session object
@@ -98,7 +98,7 @@ class policyEstimator(object):
         return grads   
 
 
-class valueEstimator(object):
+class critic(object):
     
     def __init__(self, sess, env):
         # Pass TensorFlow session object
