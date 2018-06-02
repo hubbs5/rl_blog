@@ -5,6 +5,8 @@
 # Simplified one-step actor critic algorithm from
 # Sutton 2018, chapter 13.5
 
+import numpy as np
+
 def one_step_a2c(env, actor, critic, gamma=0.99, 
                  num_episodes=2000, print_output=True):
     '''
