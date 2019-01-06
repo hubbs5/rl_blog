@@ -19,12 +19,12 @@ class gridworld:
         self.n = 0
         self.action_space = [0, 1, 2, 3]
         self.action_dict = {'Up': 0,
-                           'Right': 1,
-                           'Left': 2,
-                           'Down': 3}
+                           'Left': 1,
+                           'Down': 2,
+                           'Right': 3}
         self.action_prob = [0.25, 0.25, 0.25, 0.25]
     
-    # Show empty environment
+    # Show empty selfironment
     def show_grid(self):
         # print rows
         for i in range(self.dim[0]):
@@ -96,62 +96,41 @@ class gridworld:
         self.n = 0
         return self.s
 
-# Function for viewing the optimal policy of a gridworld based on the state
-# values (V(s))
-def opt_policy_v(v, grid):
-    # Need to define actions that lead to a 
-    # higher state value
-    
-    x = np.linspace(0, grid.dim[1] - 1, grid.dim[1]) + 0.5
-    y = np.linspace(grid.dim[0] - 1, 0, grid.dim[0]) + 0.5
-    X, Y = np.meshgrid(x, y)
-    zeros = np.zeros(grid.dim)
+    # Plots policy from q-table
+    def plot_policy(self, q_table):
+        x = np.linspace(0, self.dim[1] - 1, self.dim[1]) + 0.5
+        y = np.linspace(self.dim[0] - 1, 0, self.dim[0]) + 0.5
+        X, Y = np.meshgrid(x, y)
+        zeros = np.zeros(self.dim)
 
-    fig = plt.figure()
-    ax = plt.axes()
-
-    # Cycle through each value entry and determine
-    # which action leads to a higher value state
-    v_star = np.zeros(grid.dim)
-    possible_actions = [[-1, 0], # Up = 0
-                       [0, 1],  # Right = 1 
-                       [1, 0], # Down = 2
-                       [0, -1]  # Left = 3
-                       ]
-    for i in range(grid.dim[0]):
-        for j in range(grid.dim[1]):
-            v_options = []
-            v_star = np.zeros(grid.dim)
-            for a_num, a in enumerate(possible_actions):
-                coord = [i + a[0], j + a[1]]
-                # Ensure action remains within bounds
-                if coord[0] >= 0 and coord[0] <= grid.dim[0] - 1:
-                    if coord[1] >= 0 and coord[1] <= grid.dim[1] - 1:
-                        v_ = v[coord[0], coord[1]]
-                        v_options.append([v_, a_num])
-                    
-            v_options = np.array(v_options)
-            max_val = np.max(v_options[:,0])
-            pol_rec = v_options[np.where(v_options[:,0]==max_val),1].flatten()
-            for direction in pol_rec:
-                v_star[i,j] = 0.4
-                # Plot results
-                if direction == 0:
-                    # Vectors point in positive Y-direction
-                    plt.quiver(X, Y, zeros, v_star, scale=1, units='xy')
-                elif direction == 3:
-                    # Vectors point in negative X-direction
-                    plt.quiver(X, Y, -v_star, zeros, scale=1, units='xy')
-                elif direction == 2:
-                    # Vectors point in negative Y-direction
-                    plt.quiver(X, Y, zeros, -v_star, scale=1, units='xy')
-                elif direction == 1:
-                    # Vectors point in positive X-direction
-                    plt.quiver(X, Y, v_star, zeros, scale=1, units='xy')
-        
-    plt.xlim([0, grid.dim[1]])
-    plt.ylim([0, grid.dim[0]])
-    ax.set_yticklabels([])
-    ax.set_xticklabels([])
-    plt.grid()
-    plt.show()
+        fig = plt.figure()
+        ax = plt.axes()
+        # Get max values
+        q_max = q_table.max(axis=2)
+        for i in range(self.dim[0]):
+            for j in range(self.dim[1]):
+                q_star = np.zeros(self.dim)
+                q_max_s = q_max[i, j]
+                max_vals = np.where(q_max_s==q_table[i,j])[0]
+                for action in max_vals:
+                    q_star[i,j] = 0.4
+                    # Plot results
+                    if action == 0:
+                        # Move up
+                        plt.quiver(X, Y, zeros, q_star, scale=1, units='xy')
+                    elif action == 1:
+                        # Move left
+                        plt.quiver(X, Y, -q_star, zeros, scale=1, units='xy')
+                    elif action == 2:
+                        # Move down
+                        plt.quiver(X, Y, zeros, -q_star, scale=1, units='xy')
+                    elif action == 3:
+                        # Move right
+                        plt.quiver(X, Y, q_star, zeros, scale=1, units='xy')
+                        
+        plt.xlim([0, self.dim[1]])
+        plt.ylim([0, self.dim[0]])
+        ax.set_yticklabels([])
+        ax.set_xticklabels([])
+        plt.grid()
+        plt.show()
