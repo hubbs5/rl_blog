@@ -97,13 +97,13 @@ class gridworld:
         return self.s
 
     # Plots policy from q-table
-    def plot_policy(self, q_table):
+    def plot_policy(self, q_table, figsize=(12,8), title='Learned Policy'):
         x = np.linspace(0, self.dim[1] - 1, self.dim[1]) + 0.5
         y = np.linspace(self.dim[0] - 1, 0, self.dim[0]) + 0.5
         X, Y = np.meshgrid(x, y)
         zeros = np.zeros(self.dim)
 
-        fig = plt.figure()
+        fig = plt.figure(figsize=figsize)
         ax = plt.axes()
         # Get max values
         q_max = q_table.max(axis=2)
@@ -132,5 +132,6 @@ class gridworld:
         plt.ylim([0, self.dim[0]])
         ax.set_yticklabels([])
         ax.set_xticklabels([])
+        plt.title(title)
         plt.grid()
         plt.show()
