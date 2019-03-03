@@ -12,7 +12,7 @@ import gym
 import torch
 from torch import nn
 from collections import namedtuple, deque, OrderedDict
-from copy import deepcopy
+from copy import copy, deepcopy
 import time
 import shutil
 
@@ -40,11 +40,6 @@ def main(argv):
         memory_size=args.memorySize,
         burn_in=args.burnIn,
         path=args.path) 
-        # epsilon_start=args.epsStart,
-        # epsilon_end=args.epsEnd,
-        # epsilon_strategy=args.epsStrategy,
-        # epsilon=args.epsConstant, 
-        #window=args.window)
 
     # Train agent
     start_time = time.time()
@@ -82,28 +77,15 @@ class DQNAgent:
         self.env_name = env.spec.id
         self.network = network
         self.target_network = deepcopy(network)
+        self.tau = network.tau
         self.batch_size = batch_size
         self.window = 100
         self.reward_threshold = 300 if 'CartPole' not in self.env_name \
-        	else 195
+            else 195
         self.path = path
         self.timestamp = time.strftime('%Y%m%d_%H%M')
         self.initialize(memory_size, burn_in)
-    
-    def take_step(self, mode='train'):
-        if mode == 'explore':
-            action = self.env.action_space.sample()
-        else:
-            action = self.network.get_action(self.s_0, epsilon=self.epsilon)
-            self.step_count += 1
-        s_1, r, done, _ = self.env.step(action)
-        self.rewards += r
-        self.buffer.append(self.s_0, action, r, done, s_1)
-        self.s_0 = s_1
-        if done:
-            self.s_0 = self.env.reset()
-        return done
-        
+           
     # Implement DQN training algorithm
     def train(self, epsilon=0.05, gamma=0.99, max_episodes=10000,
         batch_size=32, network_sync_frequency=5000, update_freq=4):
@@ -123,8 +105,8 @@ class DQNAgent:
                 done = self.take_step(mode='train')
                 # Update network
                 if self.step_count % update_freq == 0:
-                	self.update()
-	            # Sync networks
+                    self.update()
+                # Sync networks
                 if self.step_count % network_sync_frequency == 0:
                     self.target_network.load_state_dict(
                         self.network.state_dict())
@@ -149,7 +131,24 @@ class DQNAgent:
                         print('Environment solved in {} episodes!'.format(
                             self.step_count))
                         break
-                        
+    def take_step(self, mode='train'):
+        if mode == 'explore':
+            action = self.env.action_space.sample()
+        else:
+            s_0 = np.ravel(self.state_buffer)
+            action = self.network.get_action(s_0, epsilon=self.epsilon)
+            self.step_count += 1
+        s_1, r, done, _ = self.env.step(action)
+        self.rewards += r
+        self.state_buffer.append(self.s_0)
+        self.next_state_buffer.append(s_1)
+        self.buffer.append(self.state_buffer, action, r, done, 
+                           self.next_state_buffer)
+        self.s_0 = s_1.copy()
+        if done:
+            self.s_0 = self.env.reset()
+        return done
+
     def calculate_loss(self, batch):
         states, actions, rewards, dones, next_states = [i for i in batch]
         rewards_t = torch.FloatTensor(rewards).to(device=self.network.device)
@@ -183,12 +182,17 @@ class DQNAgent:
         self.update_loss = []
         self.mean_training_rewards = []
         self.rewards = 0
-        self.s_0 = self.env.reset()
         self.step_count = 0
+        self.s_0 = self.env.reset()
+        self.state_buffer = deque(maxlen=self.tau)
+        [self.state_buffer.append(np.zeros(self.s_0.size)) 
+         for i in range(self.tau)]
+        self.next_state_buffer = copy(self.state_buffer)
+        self.state_buffer.append(self.s_0)
         self.success = False
         if self.path is None:
             self.path = os.path.join(os.getcwd(), 
-            	self.env_name, self.timestamp)
+                self.env_name, self.timestamp)
         os.makedirs(self.path, exist_ok=True)
 
     def plot_rewards(self):
@@ -219,11 +223,12 @@ class QNetwork(nn.Module):
     
     def __init__(self, env, learning_rate=1e-3, n_hidden_layers=4,
         n_hidden_nodes=256, bias=True, activation_function='relu',
-        device='cpu', *args, **kwargs):
+        tau=3, device='cpu', *args, **kwargs):
         super(QNetwork, self).__init__()
         self.device = device
         self.actions = np.arange(env.action_space.n)
-        n_inputs = env.observation_space.shape[0]
+        self.tau = tau
+        n_inputs = env.observation_space.shape[0] * tau
         n_outputs = env.action_space.n
 
         activation_function = activation_function.lower()
@@ -286,34 +291,37 @@ class QNetwork(nn.Module):
         return torch.max(qvals, dim=-1)[1].item()
     
     def get_qvals(self, state):
+        if type(state) is tuple:
+            state = np.array([np.ravel(s) for s in state])
         state_t = torch.FloatTensor(state).to(device=self.device)
         return self.network(state_t)
 
 class experienceReplayBuffer:
 
-    def __init__(self, memory_size=50000, burn_in=10000):
+    def __init__(self, memory_size=50000, burn_in=10000, state_size=3):
         self.memory_size = memory_size
         self.burn_in = burn_in
         self.Buffer = namedtuple('Buffer', 
             field_names=['state', 'action', 'reward', 'done', 'next_state'])
-        self.replayMemory = deque(maxlen=memory_size)
+        self.replay_memory = deque(maxlen=memory_size)
+        self.state_buffer = deque(maxlen=state_size)
 
     def sample_batch(self, batch_size=32):
-        samples = np.random.choice(len(self.replayMemory), batch_size, 
-            replace=False)
+        samples = np.random.choice(len(self.replay_memory), batch_size, 
+                                   replace=False)
         # Use asterisk operator to unpack deque 
-        batch = zip(*[self.replayMemory[i] for i in samples])
+        batch = zip(*[self.replay_memory[i] for i in samples])
         return batch
 
     def append(self, state, action, reward, done, next_state):
-        self.replayMemory.append(
+        self.replay_memory.append(
             self.Buffer(state, action, reward, done, next_state))
 
     def burn_in_capacity(self):
-        return len(self.replayMemory) / self.burn_in
+        return len(self.replay_memory) / self.burn_in
     
     def capacity(self):
-        return len(self.replayMemory) / self.memory_size
+        return len(self.replay_memory) / self.memory_size
 
 def parse_arguments():
     parser = ArgumentParser(description='Deep Q Network Argument Parser')
@@ -361,7 +369,7 @@ def parse_arguments():
     parser.add_argument('--plot', type=str2bool, default=True,
         help='If true, plot training results.')
     parser.add_argument('--path', type=str, default=None,
-    	help='Specify path to save results.')
+        help='Specify path to save results.')
     args = parser.parse_args()
 
     return parser.parse_args()
