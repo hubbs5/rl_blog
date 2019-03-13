@@ -13,6 +13,7 @@ import torch
 from torch import nn
 from collections import namedtuple, deque, OrderedDict
 from copy import copy, deepcopy
+import pandas as pd
 import time
 import shutil
 
@@ -39,13 +40,13 @@ def main(argv):
     agent = DQNAgent(env, dqn,  
         memory_size=args.memorySize,
         burn_in=args.burnIn,
+        reward_threshold=args.threshold,
         path=args.path) 
     print(agent.network)
     print(agent.target_network)
     # Train agent
     start_time = time.time()
-    #print(agent.state_buffer, agent.s_0)
-    #print(agent.next_state_buffer)
+
     agent.train(epsilon=args.epsStart,
         gamma=args.gamma, 
         max_episodes=args.maxEps,
@@ -64,7 +65,6 @@ def main(argv):
     x = end_time - start_time
     hours, remainder = divmod(x, 3600)
     minutes, seconds = divmod(remainder, 60)
-    print("Agent training: {}".format(agent.success))
     print("Peak mean reward: {:.2f}".format(
         max(agent.mean_training_rewards)))
     print("Training Time: {:02}:{:02}:{:02}\n".format(
@@ -74,7 +74,8 @@ def main(argv):
 class DQNAgent:
     
     def __init__(self, env, network, memory_size=50000,
-        batch_size=32, burn_in=10000, path=None, *args, **kwargs):
+        batch_size=32, burn_in=10000, reward_threshold=None,
+        path=None, *args, **kwargs):
         
         self.env = env
         self.env_name = env.spec.id
@@ -83,8 +84,11 @@ class DQNAgent:
         self.tau = network.tau
         self.batch_size = batch_size
         self.window = 100
-        self.reward_threshold = 195 if 'CartPole' in self.env_name \
-            else 300
+        if reward_threshold is None:
+            self.reward_threshold = 195 if 'CartPole' in self.env_name \
+                else 300
+        else:
+            self.reward_threshold = reward_threshold
         self.path = path
         self.timestamp = time.strftime('%Y%m%d_%H%M')
         self.initialize(memory_size, burn_in)
@@ -133,6 +137,7 @@ class DQNAgent:
                         break
                     if mean_rewards >= self.reward_threshold:
                         training = False
+                        self.success = True
                         print('\nEnvironment solved in {} steps!'.format(
                             self.step_count))
                         break
@@ -212,7 +217,7 @@ class DQNAgent:
 
     def save_results(self, args):
         weights_path = os.path.join(self.path, 'dqn_weights.pt')
-        torch.save(self.network.stat_dict(), weights_path)
+        torch.save(self.network.state_dict(), weights_path)
         # Save rewards
         rewards = pd.DataFrame(self.training_rewards, columns=['reward'])
         rewards.insert(0, 'episode', rewards.index.values)
@@ -379,6 +384,8 @@ def parse_arguments():
         help='If true, plot training results.')
     parser.add_argument('--path', type=str, default=None,
         help='Specify path to save results.')
+    parser.add_argument('--threshold', type=int, default=195,
+        help='Set target reward threshold for the solved environment.')
     args = parser.parse_args()
 
     return parser.parse_args()
