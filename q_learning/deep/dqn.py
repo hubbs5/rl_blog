@@ -147,7 +147,7 @@ class DQNAgent:
             action = self.env.action_space.sample()
         else:
             s_0 = np.ravel(self.state_buffer)
-            action = self.network.get_action(self.s_0, epsilon=self.epsilon)
+            action = self.network.get_action(s_0, epsilon=self.epsilon)
             self.step_count += 1
         s_1, r, done, _ = self.env.step(action)
         self.rewards += r
@@ -195,9 +195,11 @@ class DQNAgent:
         self.step_count = 0
         self.s_0 = self.env.reset()
         self.state_buffer = deque(maxlen=self.tau)
+        self.next_state_buffer = deque(maxlen=self.tau)
         [self.state_buffer.append(np.zeros(self.s_0.size)) 
          for i in range(self.tau)]
-        self.next_state_buffer = copy(self.state_buffer)
+        [self.next_state_buffer.append(np.zeros(self.s_0.size)) 
+         for i in range(self.tau)]
         self.state_buffer.append(self.s_0)
         self.success = False
         if self.path is None:
@@ -239,6 +241,7 @@ class QNetwork(nn.Module):
         self.actions = np.arange(env.action_space.n)
         self.tau = tau
         n_inputs = env.observation_space.shape[0] * tau
+        self.n_inputs = n_inputs
         n_outputs = env.action_space.n
 
         activation_function = activation_function.lower()
