@@ -33,16 +33,19 @@ def main(argv):
         n_hidden_nodes=args.hn, 
         learning_rate=args.lr, 
         bias=args.bias,
+        tau=args.tau,
         device=args.gpu)
-    print(dqn)
     # Initialize DQNAgent
     agent = DQNAgent(env, dqn,  
         memory_size=args.memorySize,
         burn_in=args.burnIn,
         path=args.path) 
-
+    print(agent.network)
+    print(agent.target_network)
     # Train agent
     start_time = time.time()
+    #print(agent.state_buffer, agent.s_0)
+    #print(agent.next_state_buffer)
     agent.train(epsilon=args.epsStart,
         gamma=args.gamma, 
         max_episodes=args.maxEps,
@@ -80,8 +83,8 @@ class DQNAgent:
         self.tau = network.tau
         self.batch_size = batch_size
         self.window = 100
-        self.reward_threshold = 300 if 'CartPole' not in self.env_name \
-            else 195
+        self.reward_threshold = 195 if 'CartPole' in self.env_name \
+            else 300
         self.path = path
         self.timestamp = time.strftime('%Y%m%d_%H%M')
         self.initialize(memory_size, burn_in)
@@ -93,7 +96,9 @@ class DQNAgent:
         self.epsilon = epsilon
         # Populate replay buffer
         while self.buffer.burn_in_capacity() < 1:
-            self.take_step(mode='explore')
+            done = self.take_step(mode='explore')
+            if done:
+                self.s_0 = self.env.reset()
             
         ep = 0
         training = True
@@ -114,10 +119,10 @@ class DQNAgent:
                 if done:
                     ep += 1
                     self.training_rewards.append(self.rewards)
-                    self.training_loss.append(np.mean(self.update_loss))
-                    self.update_loss = []
                     mean_rewards = np.mean(
                         self.training_rewards[-self.window:])
+                    self.training_loss.append(np.mean(self.update_loss))
+                    self.update_loss = []
                     self.mean_training_rewards.append(mean_rewards)
                     print("\rEpisode {:d} Mean Rewards {:.2f}\t\t".format(
                         ep, mean_rewards), end="")
@@ -128,40 +133,40 @@ class DQNAgent:
                         break
                     if mean_rewards >= self.reward_threshold:
                         training = False
-                        print('Environment solved in {} episodes!'.format(
+                        print('\nEnvironment solved in {} steps!'.format(
                             self.step_count))
                         break
+
     def take_step(self, mode='train'):
         if mode == 'explore':
             action = self.env.action_space.sample()
         else:
             s_0 = np.ravel(self.state_buffer)
-            action = self.network.get_action(s_0, epsilon=self.epsilon)
+            action = self.network.get_action(self.s_0, epsilon=self.epsilon)
             self.step_count += 1
         s_1, r, done, _ = self.env.step(action)
         self.rewards += r
-        self.state_buffer.append(self.s_0)
-        self.next_state_buffer.append(s_1)
-        self.buffer.append(self.state_buffer, action, r, done, 
-                           self.next_state_buffer)
+        self.state_buffer.append(self.s_0.copy())
+        self.next_state_buffer.append(s_1.copy())
+        self.buffer.append(deepcopy(self.state_buffer), action, r, done, 
+                           deepcopy(self.next_state_buffer))
         self.s_0 = s_1.copy()
-        if done:
-            self.s_0 = self.env.reset()
         return done
 
     def calculate_loss(self, batch):
         states, actions, rewards, dones, next_states = [i for i in batch]
         rewards_t = torch.FloatTensor(rewards).to(device=self.network.device)
-        actions_t = torch.LongTensor(np.array(actions)).reshape(-1,1).to(
-            device=self.network.device)
+        actions_t = torch.LongTensor(np.array(actions)).to(
+            device=self.network.device).reshape(-1,1)
         dones_t = torch.ByteTensor(dones).to(device=self.network.device)
         
-        qvals = torch.gather(self.network.get_qvals(states), 1, actions_t)
+        qvals = torch.gather(self.network.get_qvals(states), 1, 
+            actions_t).squeeze()
         qvals_next = torch.max(self.target_network.get_qvals(next_states),
                                dim=-1)[0].detach()
         qvals_next[dones_t] = 0 # Zero-out terminal states
         expected_qvals = self.gamma * qvals_next + rewards_t
-        loss = nn.MSELoss()(qvals, expected_qvals.reshape(-1,1))
+        loss = nn.MSELoss()(qvals, expected_qvals)
         return loss
     
     def update(self):
@@ -223,7 +228,7 @@ class QNetwork(nn.Module):
     
     def __init__(self, env, learning_rate=1e-3, n_hidden_layers=4,
         n_hidden_nodes=256, bias=True, activation_function='relu',
-        tau=3, device='cpu', *args, **kwargs):
+        tau=1, device='cpu', *args, **kwargs):
         super(QNetwork, self).__init__()
         self.device = device
         self.actions = np.arange(env.action_space.n)
@@ -298,13 +303,12 @@ class QNetwork(nn.Module):
 
 class experienceReplayBuffer:
 
-    def __init__(self, memory_size=50000, burn_in=10000, state_size=3):
+    def __init__(self, memory_size=50000, burn_in=10000):
         self.memory_size = memory_size
         self.burn_in = burn_in
         self.Buffer = namedtuple('Buffer', 
             field_names=['state', 'action', 'reward', 'done', 'next_state'])
         self.replay_memory = deque(maxlen=memory_size)
-        self.state_buffer = deque(maxlen=state_size)
 
     def sample_batch(self, batch_size=32):
         samples = np.random.choice(len(self.replay_memory), batch_size, 
@@ -326,11 +330,11 @@ class experienceReplayBuffer:
 def parse_arguments():
     parser = ArgumentParser(description='Deep Q Network Argument Parser')
     # Network parameters
-    parser.add_argument('--hl', type=int, default=4,
+    parser.add_argument('--hl', type=int, default=3,
         help='An integer number that defines the number of hidden layers.')
-    parser.add_argument('--hn', type=int, default=256,
+    parser.add_argument('--hn', type=int, default=16,
         help='An integer number that defines the number of hidden nodes.')
-    parser.add_argument('--lr', type=float, default=25e-5,
+    parser.add_argument('--lr', type=float, default=0.001,
         help='An integer number that defines the number of hidden layers.')
     parser.add_argument('--bias', type=str2bool, default=True,
         help='Boolean to determine whether or not to use biases in network.')
@@ -338,21 +342,24 @@ def parse_arguments():
         help='Set activation function.')
     parser.add_argument('--gpu', type=str2bool, default=False,
         help='Boolean to enable GPU computation. Default set to False.')
+    # Environment
     parser.add_argument('--env', dest='env', type=str, default='CartPole-v0')
+
+    # Training parameters
     parser.add_argument('--gamma', type=float, default=0.99,
         help='A value between 0 and 1 to discount future rewards.')
     parser.add_argument('--maxEps', type=int, default=10000,
         help='An integer number of episodes to train the agent on.')
-    parser.add_argument('--netSyncFreq', type=int, default=10000,
+    parser.add_argument('--netSyncFreq', type=int, default=2000,
         help='An integer number that defines steps to update the target network.')
-    parser.add_argument('--updateFreq', type=int, default=4,
+    parser.add_argument('--updateFreq', type=int, default=1,
         help='Integer value that determines how many steps or episodes' + 
         'must be completed before a backpropogation update is taken.')
     parser.add_argument('--batch', type=int, default=32,
         help='An integer number that defines the batch size.')
     parser.add_argument('--memorySize', type=int, default=50000,
         help='An integer number that defines the replay buffer size.')
-    parser.add_argument('--burnIn', type=int, default=10000,
+    parser.add_argument('--burnIn', type=int, default=20000,
         help='Set the number of random burn-in transitions before training.')
     parser.add_argument('--epsStart', type=float, default=0.05,
         help='Float value for the start of the epsilon decay.')
@@ -362,6 +369,8 @@ def parse_arguments():
         help="Enter 'constant' to set epsilon to a constant value or 'decay'" + 
         "to have the value decay over time. If 'decay', ensure proper" + 
         "start and end values.")
+    parser.add_argument('--tau', type=int, default=1,
+    	help='Number of states to link together.')
     parser.add_argument('--epsConstant', type=float, default=0.05,
         help='Float to be used in conjunction with a constant epsilon strategy.')
     parser.add_argument('--window', type=int, default=100,
