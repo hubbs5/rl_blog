@@ -16,6 +16,7 @@ from copy import copy, deepcopy
 import pandas as pd
 import time
 import shutil
+from skimage import transform
 
 def main(argv):
 
@@ -35,7 +36,8 @@ def main(argv):
         learning_rate=args.lr, 
         bias=args.bias,
         tau=args.tau,
-        device=args.gpu)
+        device=args.gpu,
+        input_dim=(84,84))
     # Initialize DQNAgent
     agent = DQNAgent(env, dqn,  
         memory_size=args.memorySize,
@@ -71,6 +73,21 @@ def main(argv):
         int(hours), int(minutes), int(seconds)))
 
 
+def scale_lumininance(obs):
+    return np.dot(obs[...,:3], [0.299, 0.587, 0.114])
+
+def resize(obs):
+    return transform.resize(obs, (84, 84))
+
+def normalize(obs):
+    return (obs - obs.mean()) / np.std(obs)
+
+def preprocess_observation(obs):
+    obs_proc = scale_lumininance(obs)
+    obs_proc = resize(obs_proc)
+    obs_proc = normalize(obs_proc)
+    return obs_proc
+
 class DQNAgent:
     
     def __init__(self, env, network, memory_size=50000,
@@ -99,15 +116,16 @@ class DQNAgent:
         self.gamma = gamma
         self.epsilon = epsilon
         # Populate replay buffer
+        print("Populating replay memory buffer...")
         while self.buffer.burn_in_capacity() < 1:
             done = self.take_step(mode='explore')
             if done:
-                self.s_0 = self.env.reset()
+                self.s_0 = preprocess_observation(self.env.reset())
             
         ep = 0
         training = True
         while training:
-            self.s_0 = self.env.reset()
+            self.s_0 = preprocess_observation(self.env.reset())
             self.rewards = 0
             done = False
             while done == False:
@@ -146,10 +164,11 @@ class DQNAgent:
         if mode == 'explore':
             action = self.env.action_space.sample()
         else:
-            s_0 = np.ravel(self.state_buffer)
+            s_0 = np.stack([self.state_buffer])
             action = self.network.get_action(s_0, epsilon=self.epsilon)
             self.step_count += 1
         s_1, r, done, _ = self.env.step(action)
+        s_1 = preprocess_observation(s_1)
         self.rewards += r
         self.state_buffer.append(self.s_0.copy())
         self.next_state_buffer.append(s_1.copy())
@@ -193,13 +212,13 @@ class DQNAgent:
         self.mean_training_rewards = []
         self.rewards = 0
         self.step_count = 0
-        self.s_0 = self.env.reset()
+        self.s_0 = preprocess_observation(self.env.reset())
         self.state_buffer = deque(maxlen=self.tau)
         self.next_state_buffer = deque(maxlen=self.tau)
-        [self.state_buffer.append(np.zeros(self.s_0.size)) 
-         for i in range(self.tau)]
-        [self.next_state_buffer.append(np.zeros(self.s_0.size)) 
-         for i in range(self.tau)]
+        [self.state_buffer.append(np.zeros(self.s_0.size))
+            for i in range(self.tau)]
+        [self.next_state_buffer.append(np.zeros(self.s_0.size))
+            for i in range(self.tau)]
         self.state_buffer.append(self.s_0)
         self.success = False
         if self.path is None:
@@ -233,15 +252,13 @@ class DQNAgent:
 
 class QNetwork(nn.Module):
     
-    def __init__(self, env, learning_rate=1e-3, n_hidden_layers=4,
-        n_hidden_nodes=256, bias=True, activation_function='relu',
-        tau=1, device='cpu', *args, **kwargs):
+    def __init__(self, env, learning_rate=1e-3, n_hidden_layers=1,
+        n_hidden_nodes=512, bias=True, activation_function='relu',
+        tau=4, device='cpu', input_dim=(84,84), *args, **kwargs):
         super(QNetwork, self).__init__()
         self.device = device
         self.actions = np.arange(env.action_space.n)
         self.tau = tau
-        n_inputs = env.observation_space.shape[0] * tau
-        self.n_inputs = n_inputs
         n_outputs = env.action_space.n
 
         activation_function = activation_function.lower()
@@ -255,14 +272,27 @@ class QNetwork(nn.Module):
             act_func = nn.Sigmoid()
         elif activation_function == 'selu':
             act_func = nn.SELU()
+
+        # CNN modeled off of Mnih et al.
+        self.cnn = nn.Sequential(
+            nn.Conv2d(tau, 32, kernel_size=8, stride=4),
+            nn.ReLU(),
+            nn.Conv2d(32, 64, kernel_size=4, stride=2),
+            nn.ReLU(),
+            nn.Conv2d(64, 64, kernel_size=3, stride=1),
+            nn.ReLU()
+        )
         
+        self.fc_layer_inputs = self.cnn_out_dim(input_dim)
+        # self.fc_layer_inputs = 3136
+
         # Build a network dependent on the hidden layer and node parameters
         layers = OrderedDict()
-        n_layers = 2 * (n_hidden_layers-1)
+        n_layers = 2 * (n_hidden_layers)
         for i in range(n_layers + 1):
             if n_hidden_layers == 0:
                 layers[str(i)] = nn.Linear(
-                    n_inputs,
+                    self.fc_layer_inputs,
                     n_outputs,
                     bias=bias)
             elif i == n_layers:
@@ -272,7 +302,7 @@ class QNetwork(nn.Module):
                     bias=bias)
             elif i % 2 == 0 and i == 0:
                 layers[str(i)] = nn.Linear(
-                    n_inputs,
+                    self.fc_layer_inputs,
                     n_hidden_nodes,
                     bias=bias)
             elif i % 2 == 0 and i < n_layers - 1:
@@ -283,11 +313,12 @@ class QNetwork(nn.Module):
             else:
                 layers[str(i)] = act_func
                 
-        self.network = nn.Sequential(layers)
+        self.fully_connected = nn.Sequential(layers)
         
         # Set device for GPU's
         if self.device == 'cuda':
-            self.network.cuda()
+            self.cnn.cuda()
+            self.fully_connected.cuda()
         
         self.optimizer = torch.optim.Adam(self.parameters(),
                                           lr=learning_rate)
@@ -304,10 +335,13 @@ class QNetwork(nn.Module):
         return torch.max(qvals, dim=-1)[1].item()
     
     def get_qvals(self, state):
-        if type(state) is tuple:
-            state = np.array([np.ravel(s) for s in state])
         state_t = torch.FloatTensor(state).to(device=self.device)
-        return self.network(state_t)
+        cnn_out = self.cnn(state_t).reshape(-1, self.fc_layer_inputs)
+        return self.fully_connected(cnn_out)
+
+    def cnn_out_dim(self, input_dim):
+        return self.cnn(torch.zeros(1, self.tau, *input_dim)
+            ).flatten().shape[0]
 
 class experienceReplayBuffer:
 
@@ -351,7 +385,7 @@ def parse_arguments():
     parser.add_argument('--gpu', type=str2bool, default=False,
         help='Boolean to enable GPU computation. Default set to False.')
     # Environment
-    parser.add_argument('--env', dest='env', type=str, default='CartPole-v0')
+    parser.add_argument('--env', dest='env', type=str, default='BreakoutNoFrameskip-v4')
 
     # Training parameters
     parser.add_argument('--gamma', type=float, default=0.99,
@@ -378,7 +412,7 @@ def parse_arguments():
         "to have the value decay over time. If 'decay', ensure proper" + 
         "start and end values.")
     parser.add_argument('--tau', type=int, default=1,
-    	help='Number of states to link together.')
+        help='Number of states to link together.')
     parser.add_argument('--epsConstant', type=float, default=0.05,
         help='Float to be used in conjunction with a constant epsilon strategy.')
     parser.add_argument('--window', type=int, default=100,
