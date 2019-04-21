@@ -167,7 +167,7 @@ class DQNAgent:
                     	self.save_weights(file_name="ep_{}_dqn_weights.pt".format(ep))
                     if ep % save_freq == 0:
                     	# Save rewards
-                    	self.save_rewards(self.training_rewards[:-save_freq], fps_buffer[:-save_freq])
+                    	self.save_rewards(self.training_rewards[:-save_freq], self.fps_buffer[:-save_freq])
                     if max_episodes is not None:
                     	if ep >= max_episodes:
 	                        training = False
