@@ -29,6 +29,12 @@ def main(argv):
     # Initialize environment
     env = gym.make(args.env)
 
+    if args.seed is None:
+        args.seed = int(time.time())
+    np.random.seed(args.seed)
+    torch.manual_seed(args.seed)
+    torch.cuda.manual_seed(args.seed)
+
     # Initialize DQNetwork
     dqn = QNetwork(env=env, 
         n_hidden_layers=args.hl, 
@@ -43,7 +49,8 @@ def main(argv):
         memory_size=args.memorySize,
         burn_in=args.burnIn,
         reward_threshold=args.threshold,
-        path=args.path) 
+        path=args.path)
+    agent.save_parameters(args)
     print(agent.network)
     print(agent.target_network)
     # Train agent
@@ -57,21 +64,19 @@ def main(argv):
         network_sync_frequency=args.netSyncFreq)
     end_time = time.time()
     # Save results
-    if agent.success:
-        agent.save_results(args)
-        if args.plot:
-            agent.plot_rewards()
-    else:
-        shutil.rmtree(agent.path)
+    agent.save_weights()
+    if args.plot:
+        agent.plot_rewards()
 
     x = end_time - start_time
     hours, remainder = divmod(x, 3600)
     minutes, seconds = divmod(remainder, 60)
     print("Peak mean reward: {:.2f}".format(
         max(agent.mean_training_rewards)))
+    print("Peak speed: {:.2f}".format(
+    	max(agent.fps_buffer)))
     print("Training Time: {:02}:{:02}:{:02}\n".format(
         int(hours), int(minutes), int(seconds)))
-
 
 def scale_lumininance(obs):
     return np.dot(obs[...,:3], [0.299, 0.587, 0.114])
@@ -80,7 +85,8 @@ def resize(obs):
     return transform.resize(obs, (84, 84))
 
 def normalize(obs):
-    return (obs - obs.mean()) / np.std(obs)
+    return obs / 255
+    # return (obs - obs.mean()) / np.std(obs)
 
 def preprocess_observation(obs):
     obs_proc = scale_lumininance(obs)
@@ -111,10 +117,13 @@ class DQNAgent:
         self.initialize(memory_size, burn_in)
            
     # Implement DQN training algorithm
-    def train(self, epsilon=0.05, gamma=0.99, max_episodes=10000,
+    def train(self, epsilon=0.05, gamma=0.99, max_episodes=None,
         batch_size=32, network_sync_frequency=5000, update_freq=4):
         self.gamma = gamma
         self.epsilon = epsilon
+        save_freq = 100
+        self.fps_buffer = []
+        best_ep_avg = 0
         # Populate replay buffer
         print("Populating replay memory buffer...")
         while self.buffer.burn_in_capacity() < 1:
@@ -128,6 +137,8 @@ class DQNAgent:
             self.s_0 = preprocess_observation(self.env.reset())
             self.rewards = 0
             done = False
+            first_step = copy(self.step_count)
+            ep_start_time = time.time()
             while done == False:
                 done = self.take_step(mode='train')
                 # Update network
@@ -140,19 +151,28 @@ class DQNAgent:
                     
                 if done:
                     ep += 1
+                    fps = (self.step_count - first_step) / (time.time() - ep_start_time)
+                    self.fps_buffer.append(fps)
                     self.training_rewards.append(self.rewards)
                     mean_rewards = np.mean(
                         self.training_rewards[-self.window:])
                     self.training_loss.append(np.mean(self.update_loss))
                     self.update_loss = []
                     self.mean_training_rewards.append(mean_rewards)
-                    print("\rEpisode {:d} Mean Rewards {:.2f}\t\t".format(
-                        ep, mean_rewards), end="")
-                    
-                    if ep >= max_episodes:
-                        training = False
-                        print('\nEpisode limit reached.')
-                        break
+                    print("\rEpisode {:d} Mean Rewards {:.2f} Speed {:.2f} (fps)\t\t".format(
+                        ep, mean_rewards, fps), end="")
+                    if max(self.mean_training_rewards) > best_ep_avg:
+                    	best_ep_avg = max(self.mean_training_rewards)
+                    	print("New best {} episode average: {:.2f}".format(self.window, best_ep_avg))
+                    	self.save_weights(file_name="ep_{}_dqn_weights.pt".format(ep))
+                    if ep % save_freq == 0:
+                    	# Save rewards
+                    	self.save_rewards(self.training_rewards[:-save_freq], fps_buffer[:-save_freq])
+                    if max_episodes is not None:
+                    	if ep >= max_episodes:
+	                        training = False
+	                        print('\nEpisode limit reached.')
+	                        break
                     if mean_rewards >= self.reward_threshold:
                         training = False
                         self.success = True
@@ -236,16 +256,26 @@ class DQNAgent:
         plt.savefig(os.path.join(self.path, 'rewards.png'))
         plt.show()
 
-    def save_results(self, args):
-        weights_path = os.path.join(self.path, 'dqn_weights.pt')
-        torch.save(self.network.state_dict(), weights_path)
-        # Save rewards
-        rewards = pd.DataFrame(self.training_rewards, columns=['reward'])
-        rewards.insert(0, 'episode', rewards.index.values)
-        rewards.to_csv(os.path.join(self.path, 'rewards.txt'))
-        # Save model parameters
+    def save_rewards(self, rewards, speeds):
+    	file_name = os.path.join(self.path, 'training_rewards.txt')
+    	if os.path.exists(file_name):
+    		file = open(file_name, 'a')
+    	else:
+    		file = open(file_name, 'w')
+    		file.write('reward,speed\n')
+    	for x in zip(episodes, rewards, speeds):
+    		file.write('{},{}\n'.format(x[0], x[1]))
+    	file.close()
+
+    def save_weights(self, file_name=None):
+    	if file_name is None:
+    		file_name = 'dqn_weights.pt'
+    	weights_path = os.path.join(self.path, file_name)
+    	torch.save(self.network.state_dict(), weights_path)
+
+    def save_parameters(self, args):
+        # Saves .txt file for input parameters
         file = open(os.path.join(self.path, 'parameters.txt'), 'w')
-        file.writelines('rewards')
         [file.writelines('\n' + str(k) + ',' + str(v)) 
             for k, v in vars(args).items()]
         file.close()
@@ -372,9 +402,9 @@ class experienceReplayBuffer:
 def parse_arguments():
     parser = ArgumentParser(description='Deep Q Network Argument Parser')
     # Network parameters
-    parser.add_argument('--hl', type=int, default=3,
+    parser.add_argument('--hl', type=int, default=1,
         help='An integer number that defines the number of hidden layers.')
-    parser.add_argument('--hn', type=int, default=16,
+    parser.add_argument('--hn', type=int, default=512,
         help='An integer number that defines the number of hidden nodes.')
     parser.add_argument('--lr', type=float, default=0.001,
         help='An integer number that defines the number of hidden layers.')
@@ -384,13 +414,15 @@ def parse_arguments():
         help='Set activation function.')
     parser.add_argument('--gpu', type=str2bool, default=False,
         help='Boolean to enable GPU computation. Default set to False.')
+    parser.add_argument('--seed', type=int,
+        help='Set random seed.')
     # Environment
     parser.add_argument('--env', dest='env', type=str, default='BreakoutNoFrameskip-v4')
 
     # Training parameters
     parser.add_argument('--gamma', type=float, default=0.99,
         help='A value between 0 and 1 to discount future rewards.')
-    parser.add_argument('--maxEps', type=int, default=10000,
+    parser.add_argument('--maxEps', type=int,
         help='An integer number of episodes to train the agent on.')
     parser.add_argument('--netSyncFreq', type=int, default=2000,
         help='An integer number that defines steps to update the target network.')
@@ -401,7 +433,7 @@ def parse_arguments():
         help='An integer number that defines the batch size.')
     parser.add_argument('--memorySize', type=int, default=50000,
         help='An integer number that defines the replay buffer size.')
-    parser.add_argument('--burnIn', type=int, default=20000,
+    parser.add_argument('--burnIn', type=int, default=32,
         help='Set the number of random burn-in transitions before training.')
     parser.add_argument('--epsStart', type=float, default=0.05,
         help='Float value for the start of the epsilon decay.')
