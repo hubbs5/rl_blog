@@ -52,7 +52,6 @@ def main(argv):
         path=args.path)
     agent.save_parameters(args)
     print(agent.network)
-    print(agent.target_network)
     # Train agent
     start_time = time.time()
 
@@ -163,7 +162,7 @@ class DQNAgent:
                         ep, mean_rewards, fps), end="")
                     if max(self.mean_training_rewards) > best_ep_avg:
                     	best_ep_avg = max(self.mean_training_rewards)
-                    	print("New best {} episode average: {:.2f}".format(self.window, best_ep_avg))
+                    	print("\nNew best {} episode average: {:.2f}".format(self.window, best_ep_avg))
                     	self.save_weights(file_name="ep_{}_dqn_weights.pt".format(ep))
                     if ep % save_freq == 0:
                     	# Save rewards
@@ -263,7 +262,7 @@ class DQNAgent:
     	else:
     		file = open(file_name, 'w')
     		file.write('reward,speed\n')
-    	for x in zip(episodes, rewards, speeds):
+    	for x in zip(rewards, speeds):
     		file.write('{},{}\n'.format(x[0], x[1]))
     	file.close()
 
